@@ -1,0 +1,117 @@
+---
+apiVersion: "v1"
+kind: "ConfigMap"
+metadata:
+  name: "mssql-config-map"
+  namespace: default
+  labels:
+    app: mssql
+data:
+  MSSQL_PID: "Developer"
+  ACCEPT_EULA: "Y"
+---
+apiVersion: "v1"
+kind: "Service"
+metadata:
+  name: "mssql" #$(service name).$(namespace).svc.cluster.local
+  labels:
+    app: mssql
+spec:
+  clusterIP: "None"
+  ports:
+  - port: 1433
+    name: "mssql"
+  selector:
+    app: "mssql"
+    release: "mssql"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mssql-lb
+  labels:
+    app: mssql  
+spec:
+  selector:
+    app: mssql
+  ports:
+    - protocol: TCP
+      port: 1433
+      targetPort: 1433
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mssql 
+  labels:
+    app: mssql
+    release: mssql
+spec:
+  serviceName: "mssql"
+  selector:
+    matchLabels:
+      app: "mssql"
+      release: "mssql"
+  replicas: 1
+  updateStrategy:
+        type: OnDelete
+  template:
+    metadata:
+      labels:
+        app: "mssql"
+        release: "mssql"
+    spec:
+      nodeSelector:
+        "beta.kubernetes.io/os": linux  
+      terminationGracePeriodSeconds: 180
+      volumes:
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "azure-sync" 
+      containers:
+        - name: mssql
+          image: mcr.microsoft.com/mssql/server:2017-latest          
+          resources:
+            {}
+          ports:
+          - containerPort: 1433
+            name: mssql
+          envFrom:
+            - configMapRef:
+                name: mssql-config-map
+          env:
+            - name: MSSQL_PID
+              valueFrom:
+                configMapKeyRef:
+                  name: mssql-config-map
+                  key: MSSQL_PID
+            - name: ACCEPT_EULA
+              valueFrom:
+                configMapKeyRef:
+                  name: mssql-config-map
+                  key: ACCEPT_EULA
+            - name: SA_PASSWORD #env variable to create
+              valueFrom:
+                secretKeyRef:
+                  name: mssql #k8s secret name. (kubectl get secret). this is auto synced during creation and deletion of the POD
+                  key: mssql #this must match the kv configuration in the yaml under secretObjects
+          volumeMounts:
+            - name: mssql-pvc
+              mountPath: /var/opt/mssql
+            - name: secrets-store-inline 
+              mountPath: "/mnt/secrets-store"
+              readOnly: true
+  volumeClaimTemplates: #default is standard storage. managed-premium is ssd
+    - metadata:
+        name: mssql-pvc      
+      spec:
+        storageClassName: default
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 4Gi
